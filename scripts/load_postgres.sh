@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+#set -euo pipefail
 
 # Configuration
 DB_HOST=${POSTGRES_HOST:-postgres}
@@ -27,7 +27,7 @@ psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" -c "TRUNCATE lineitem, orders, cu
 # -----------------------------------------------------------------------------
 # 2. BULK LOAD
 # -----------------------------------------------------------------------------
-echo "🚀 Starting Bulk Load..."
+echo "Starting Bulk Load..."
 
 # List of tables to load in dependency order (referenced by Foreign Keys)
 TABLES="region nation part supplier partsupp customer orders lineitem"
@@ -48,9 +48,9 @@ for table in $TABLES; do
         sed 's/|$//' "$FILE" | psql -h "$DB_HOST" -U "$DB_USER" -d "$DB_NAME" \
             -c "COPY $table FROM STDIN WITH (FORMAT csv, DELIMITER '|');"
 
-        echo "✅ $table loaded."
+        echo "$table loaded."
     else
-        echo "⚠️  Warning: $FILE not found. Skipping."
+        echo "Warning: $FILE not found. Skipping."
     fi
 done
 

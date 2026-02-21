@@ -2,6 +2,7 @@
 """
 Main application file to initialize and run the FastAPI app.
 """
+import os
 import logging
 
 from fastapi import FastAPI
@@ -24,7 +25,6 @@ app.include_router(redis.router, prefix="/redis", tags=["Redis"])
 app.include_router(neo4j.router, prefix="/neo4j", tags=["Neo4j"])
 app.include_router(cassandra.router, prefix="/cassandra", tags=["Cassandra"])
 app.include_router(mongodb.router, prefix="/mongodb", tags=["MongoDB"])
-
 
 @app.get("/", tags=["Root"])
 async def read_root():

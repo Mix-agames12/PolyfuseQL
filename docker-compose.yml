@@ -10,6 +10,22 @@ networks:
     driver: bridge
 
 services:
+  # ─────────────── PolyFuse API (FastAPI) ───────────────── #
+  polyfuseql-api:
+    container_name: polyfuseql_api
+    build:
+      context: .
+      dockerfile: docker/polyfuseql-api/Dockerfile
+    profiles: [ "api" ]
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - polyfuse-net
+
   # ────────────── TPC-H Data Generator (DBGEN) ────────────── #
   dbgen:
     build: ./docker/dbgen
@@ -17,8 +33,6 @@ services:
     volumes:
       - ./docker/tpch-data:/data
     entrypoint: /bin/sh
-    # Updated command to use the Python CLI tool 'tpchgen'
-    # Arguments (--scale, --output) are compatible with the Rust version
     command: >
       -c "tpchgen-cli --scale-factor 0.01 --output-dir /data && 
           chown ${UID:-1000}:${GID:-1000} /data/*"
@@ -30,7 +44,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: polyfuseql_pg_tpch
-    profiles: [ "postgres", "db" ]
+    profiles: [ "postgres", "postgres-loader" ]
     environment:
       POSTGRES_DB: tpch
       POSTGRES_USER: tpch
@@ -53,11 +67,30 @@ services:
     networks:
       - polyfuse-net
 
+  postgres-loader:
+    image: postgres:16-alpine
+    container_name: polyfuseql_loader_postgres_client
+    profiles: [ "postgres-loader" ]
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./docker/tpch-data:/data:ro
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: tpch
+      POSTGRES_USER: tpch
+      POSTGRES_PASSWORD: tpch
+    command: [ "/bin/bash", "/scripts/load_postgres.sh" ]
+    depends_on:
+     postgres:
+       condition: service_healthy
+    networks:
+      - polyfuse-net
+
   # ────────────── Redis ────────────── #
   redis:
     image: redis/redis-stack:latest
     container_name: polyfuseql_redis_kv
-    profiles: [ "redis", "db" ]
+    profiles: [ "redis", "redis-loader" ]
     command: [ "redis-stack-server", "--requirepass", "tpch", "--protected-mode", "no" ]
     volumes:
       - polyfuseql-redis-data:/data
@@ -69,12 +102,31 @@ services:
       retries: 10
     networks:
       - polyfuse-net
+  
+  redis-loader:
+    image: python:3.12-slim
+    container_name: polyfuseql_loader_redis_client
+    profiles: [ "redis-loader" ]
+    volumes:
+      - ./docker/tpch-data:/data:ro
+      - ./scripts:/scripts:ro
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: tpch
+    command: >
+      sh -c "pip install redis && python /scripts/load_redis.py"
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - polyfuse-net
 
   # ────────────── Neo4j ────────────── #
   neo4j:
     image: neo4j:5-community
     container_name: polyfuseql_neo4j_graph
-    profiles: [ "neo4j", "db" ]
+    profiles: [ "neo4j", "neo4j-loader" ]
     user: "${UID:-1000}:${GID:-1000}"
     environment:
       NEO4J_AUTH: neo4j/password
@@ -98,33 +150,100 @@ services:
         condition: service_completed_successfully
     networks:
       - polyfuse-net
+  
+  neo4j-loader:
+    image: neo4j:5-community
+    container_name: polyfuseql_loader_neo4j_client
+    profiles: [ "neo4j-loader" ]
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./docker/tpch-data:/data:ro
+    environment:
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: password
+    entrypoint: /bin/sh
+    command: >
+      -c "sleep 10 && 
+          cypher-shell -a neo4j://neo4j:7687 -u neo4j -p password -f /scripts/load_neo4j.cypher"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - polyfuse-net
 
   # ────────────── MongoDB ────────────── #
   mongodb:
     image: mongo:latest
     container_name: polyfuseql_mongodb
-    profiles: [ "mongodb", "db" ]
+    profiles: [ "mongodb", "mongodb-services", "mongo-loader" ]
     ports:
-      - "27018:27017"
+      - "27017:27017"
     environment:
       - MONGO_INITDB_ROOT_USERNAME=root
       - MONGO_INITDB_ROOT_PASSWORD=example
     volumes:
       - polyfuseql-mongo-data:/data/db
     healthcheck:
-      test: "mongosh --port 27017 --username root --password example --eval 'quit(db.runCommand({ ping: 1 }).ok ? 0 : 1)'"
+      test: [ "CMD-SHELL", "mongosh --port 27017 --username root --password example --authenticationDatabase admin --eval \"db.runCommand({ ping: 1 }).ok\" || exit 1" ]
       interval: 10s
       timeout: 10s
       retries: 5
       start_period: 30s
     networks:
       - polyfuse-net
+    restart: unless-stopped
 
+  mongo-loader:
+    image: python:3.12-slim
+    container_name: polyfuseql_loader_mongo_client
+    profiles: [ "mongo-loader" ]
+    volumes:
+      - ./docker/tpch-data:/data:ro
+      - ./scripts:/scripts:ro
+    environment:
+      MONGO_HOST: mongodb
+      MONGO_PORT: 27017
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: example
+    
+    command: >
+      sh -c "pip install pymongo && python /scripts/load_mongo.py"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - polyfuse-net
+
+  mongo-translator-api:
+    build:
+      context: .
+      dockerfile: docker/mongo-translator/Dockerfile
+    container_name: polyfuseql_mongo_translator
+    profiles: [ "mongodb-services", "mongo-loader" ]
+    ports:
+      - "5101:5000"
+    environment:
+      - MONGO_URI=mongodb://root:example@mongodb:27017/?authSource=admin
+      - AUTH_DB_NAME=sql_middleware_auth
+      - JWT_SECRET_KEY=dev-secret
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - polyfuse-net
+    restart: unless-stopped
+  
   # ────────────── Cassandra ────────────── #
   cassandra:
     image: cassandra:latest
     container_name: polyfuseql_cassandra
-    profiles: [ "cassandra", "db", "cassandra-services" ]
+    profiles: [ "cassandra", "cassandra-services", "cassandra-loader" ]
     ports:
       - "9043:9042"
     environment:
@@ -147,37 +266,12 @@ services:
     networks:
       - polyfuse-net
 
-  # ─────────── Translator Services ─────────── #
-  mongo-translator-api:
-    build:
-      context: .
-      dockerfile: docker/mongo-translator/Dockerfile
-    container_name: polyfuseql_mongo_translator
-    profiles: [ "mongo-translator", "api" ]
-    ports:
-      - "5101:5000"
-    environment:
-      - MONGO_URI=mongodb://root:example@mongodb:27017/
-      - AUTH_DB_NAME=sql_middleware_auth
-      - JWT_SECRET_KEY=dev-secret
-    depends_on:
-      mongodb:
-        condition: service_healthy
-    healthcheck:
-      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - polyfuse-net
-
   cassandra-translator-api:
     build:
       context: . # The context is the root of your project
       dockerfile: docker/cassandra-translator/Dockerfile # Path to the new Dockerfile
     container_name: polyfuseql_cassandra_translator
-    profiles: [ "cassandra-translator", "api","cassandra-services" ]
+    profiles: [ "cassandra-translator", "cassandra-services", "cassandra-loader" ]
     ports:
       - "3101:3000"
     environment:
@@ -201,17 +295,15 @@ services:
     networks:
       - polyfuse-net
 
-  # ------------------ Authentication Service ------------------
   cassandra-translator-api-auth_service:
     build:
       context: .
       dockerfile: docker/cassandra-auth-service/Dockerfile
     container_name: polyfuseql_cassandra_translator_auth
-    profiles: [ "cassandra-auth", "api", "cassandra-services" ]
+    profiles: [ "cassandra-auth", "cassandra-services", "cassandra-loader" ]
     ports:
       - "3001:3001"
     environment:
-      # These variables are based on the auth-service code structure
       - CASSANDRA_HOST=cassandra
       - CASSANDRA_PORT=9042
       - CASSANDRA_USER=cassandra
@@ -236,7 +328,7 @@ services:
       context: .
       dockerfile: docker/cassandra-permission-service/Dockerfile
     container_name: polyfuseql_cassandra_translator_permission
-    profiles: [ "cassandra-permission", "api", "cassandra-services" ]
+    profiles: [ "cassandra-permission", "cassandra-services", "cassandra-loader" ]
     ports:
       - "3002:3002"
     environment:
@@ -244,7 +336,7 @@ services:
       - CASSANDRA_PORT=9042
       - CASSANDRA_USER=cassandra
       - CASSANDRA_PASSWORD=cassandra
-      - CASSANDRA_KEYSPACE=auth # It uses the same keyspace as the auth service.
+      - CASSANDRA_KEYSPACE=auth
       - CASSANDRA_LOCAL_DATACENTER=datacenter1
       - JWT_SECRET=your-jwt-secret
     depends_on:
@@ -252,124 +344,24 @@ services:
         condition: service_healthy
     networks:
       - polyfuse-net
-  polyfuseql:
-    container_name: polyfuseql_app
-    build:
-      context: .
-      dockerfile: docker/polyfuseql/Dockerfile
-    profiles: [ "app" ]
-    ports:
-      - "8000:8000"
-    # Load environment variables from .env
-    env_file:
-      - .env
-    # Allow communication with the local host machine if necessary
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # Wait for databases to be healthy before starting
-    networks:
-      - polyfuse-net
-  postgres-loader:
-    # Use standard Postgres image just to get the 'psql' client tool
-    image: postgres:16-alpine
-    container_name: polyfuseql_loader_postgres_client
-    profiles: [ "loader", "postgres-loader" ]
-    volumes:
-      - ./scripts:/scripts:ro
-      - ./docker/tpch-data:/data:ro
-    environment:
-      POSTGRES_HOST: postgres # Connects to the 'postgres' service defined above
-      POSTGRES_DB: tpch
-      POSTGRES_USER: tpch
-      POSTGRES_PASSWORD: tpch
-    command: [ "/bin/bash", "/scripts/load_postgres.sh" ]
-    #depends_on:
-    #  postgres:
-    #    condition: service_healthy
-    networks:
-      - polyfuse-net
-
-  neo4j-loader:
-    # Use Neo4j image just to get 'cypher-shell' client tool
-    image: neo4j:5-community
-    container_name: polyfuseql_loader_neo4j_client
-    profiles: [ "loader", "neo4j-loader" ]
-    volumes:
-      - ./scripts:/scripts:ro
-      - ./docker/tpch-data:/data:ro
-    environment:
-      NEO4J_USERNAME: neo4j
-      NEO4J_PASSWORD: password
-    entrypoint: /bin/sh
-    # Connects to 'neo4j' service defined above
-    command: >
-      -c "sleep 10 && 
-          cypher-shell -a neo4j://neo4j:7687 -u neo4j -p password -f /scripts/load_neo4j.cypher"
-#    depends_on:
-#      neo4j:
-#        condition: service_healthy
-    networks:
-      - polyfuse-net
-
-  redis-loader:
-    # Lightweight python image to run the load script
-    image: python:3.12-slim
-    container_name: polyfuseql_loader_redis_client
-    profiles: [ "loader", "redis-loader" ]
-    volumes:
-      - ./docker/tpch-data:/data:ro
-      - ./scripts:/scripts:ro
-    environment:
-      REDIS_HOST: redis # Connects to the 'redis' service defined above
-      REDIS_PORT: 6379
-      REDIS_PASSWORD: tpch
-    # Install redis lib on the fly and run script
-    command: >
-      sh -c "pip install redis && python /scripts/load_redis.py"
-#    depends_on:
-#      redis:
-#        condition: service_healthy
-    networks:
-      - polyfuse-net
-  mongo-loader:
-    image: python:3.12-slim
-    container_name: polyfuseql_loader_mongo_client
-    profiles: [ "loader", "mongo-loader" ]
-    volumes:
-      - ./docker/tpch-data:/data:ro
-      - ./scripts:/scripts:ro
-    environment:
-      MONGO_HOST: mongodb
-      MONGO_PORT: 27017
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: example
-    # Install pymongo on the fly and run script
-    command: >
-      sh -c "pip install pymongo && python /scripts/load_mongo.py"
-#    depends_on:
-#      mongodb:
-#        condition: service_healthy
-    networks:
-      - polyfuse-net
 
   cassandra-loader:
     image: python:3.12-slim
     container_name: polyfuseql_loader_cassandra_client
-    profiles: [ "loader", "cassandra-loader" ]
+    profiles: [ "cassandra-loader" ]
     volumes:
       - ./docker/tpch-data:/data:ro
-      - ./scripts:/scripts:ro
+      - ./scripts:/scripts:ro 
     environment:
       CASSANDRA_HOST: cassandra
       CASSANDRA_PORT: 9042
       CASSANDRA_USER: cassandra
       CASSANDRA_PASSWORD: cassandra
       CASSANDRA_KEYSPACE: tpch
-    # Install cassandra-driver on the fly and run script
     command: >
       sh -c "pip install cassandra-driver && python /scripts/load_cassandra.py"
-#    depends_on:
-#      cassandra:
-#        condition: service_healthy
+    depends_on:
+      cassandra:
+        condition: service_healthy
     networks:
       - polyfuse-net

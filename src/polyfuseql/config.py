@@ -10,24 +10,25 @@ single source of truth throughout the application.
 """
 
 import logging
+import os
 from pathlib import Path
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class PostgresSettings(BaseModel):
-    user: str = "tpch"
-    password: str = "tpch"
-    host: str = "localhost"
-    port: int = 5432
-    db: str = "tpch"
+    user: str = os.getenv("POSTGRES_USER", "tpch")
+    password: str = os.getenv("POSTGRES_PASSWORD", "tpch")
+    host: str = os.getenv("POSTGRES_HOST", "localhost")
+    port: int = int(os.getenv("POSTGRES_PORT", 5432))
+    db: str = os.getenv("POSTGRES_DB", "tpch")
 
 
 class RedisSettings(BaseModel):
-    host: str = "localhost"
-    port: int = 6379
+    host: str = os.getenv("REDIS_HOST", "localhost")
+    port: int = int(os.getenv("REDIS_PORT", 6379))
     db: int = 0
-    password: str = "tpch"
+    password: str = os.getenv("REDIS_PASSWORD", "tpch")
     data_type: str = "string"
 
 
@@ -38,13 +39,12 @@ class Neo4jSettings(BaseModel):
     host: str = "localhost"
     port: int = 7687
 
-
 class MongoDbSettings(BaseModel):
-    user: str = "root"
-    password: str = "example"
-    host: str = "localhost"
-    port: int = 27018
-    db: str = "mydatabase"
+    user: str = os.getenv("MONGO_INITDB_ROOT_USERNAME", "root")
+    password: str = os.getenv("MONGO_INITDB_ROOT_PASSWORD", "example")
+    host: str = os.getenv("MONGO_HOST", "mongodb")
+    port: int = int(os.getenv("MONGO_PORT", 27017))
+    db: str = os.getenv("MONGO_DB_NAME", "tpch")
 
 
 class CassandraAuthSettings(BaseModel):
@@ -53,7 +53,7 @@ class CassandraAuthSettings(BaseModel):
     The port is based on the host mapping from 'docker ps' (3001->3001).
     """
 
-    url: str = "http://localhost:3001"
+    url: str = "http://polyfuseql_cassandra_translator_auth:3001"
     cedula: str = "admin"
     nombre: str = "Admin User"
     password: str = "admin123"
@@ -62,7 +62,7 @@ class CassandraAuthSettings(BaseModel):
 class CassandraSettings(BaseModel):
     user: str | None = "cassandra"
     password: str | None = "cassandra"
-    host: str = "localhost"
+    host: str = "cassandra"
     port: int = 9043
     keyspace: str = "mykeyspace"
     auth: CassandraAuthSettings = Field(default_factory=CassandraAuthSettings)
@@ -109,7 +109,7 @@ class AppSettings(BaseSettings):
     spark: SparkSettings = Field(default_factory=SparkSettings)
 
     mongo_translator_url: str = "http://mongo-translator-api:5000"
-    cassandra_translator_url: str = "http://localhost:3101"
+    cassandra_translator_url: str = "http://polyfuseql_cassandra_translator:3000"
 
     # Application-specific Settings
     polyfuseql_schema_path: Path = Path("schemas.json")
