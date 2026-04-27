@@ -115,6 +115,8 @@ class SelectStrategy(QueryStrategy):
         logging.warning(
             "SELECT queries without a WHERE clause can be heavy to execute and load take caution"  # noqa:E501
         )
+        logging.info(f"Connector '{conn.__class__.__name__}' executing get_all on table '{physical_table}'")  # noqa:E501
+        logging.info(f"connector {conn}")
         result = await conn.get_all(physical_table)
         return result if result else []
 
