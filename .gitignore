@@ -2,8 +2,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-.venv_wsl/
-*.pyc
 
 # C extensions
 *.so
@@ -83,22 +81,6 @@ target/
 # IPython
 profile_default/
 ipython_config.py
-
-# Archivos generados por Claude
-tmpclaude*
-CRUD_GUIDE.md
-CRUD_SQL_FOR_POSTMAN.md
-dtic_env/
-src/tmpclaude-2466-cwd
-tmpclaude-938f-cwd
-tmpclaude-cd75-cwd
-tmpclaude-f948-cwd
-files.txt
-
-# Archivos de entorno
-/dtic_env/
-
-
 
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
@@ -196,5 +178,3 @@ docker/**/init/*.cypher
 docker/**/init/*.redis
 /scripts/snapshot_20250518_212845.txt
 /snapshot_*_*.txt
-/docker/tpch-data/
-/jars/*.jars

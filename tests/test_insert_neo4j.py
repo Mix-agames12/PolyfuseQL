@@ -18,6 +18,6 @@ async def test_insert_neo4j():
 
         # Verify with a SELECT query
         sql = "SELECT * FROM Person WHERE id = '123'"
-        rows = await client.execute(sql, engine="neo4j", use_catalogue=False)
+        rows = await client.execute(sql, engine="neo4j")
         assert rows
         assert rows[0]["name"] == "Neo4jUser"
