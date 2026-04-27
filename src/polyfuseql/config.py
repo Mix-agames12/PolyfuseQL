@@ -29,7 +29,7 @@ class RedisSettings(BaseModel):
     port: int = int(os.getenv("REDIS_PORT", 6379))
     db: int = 0
     password: str = os.getenv("REDIS_PASSWORD", "tpch")
-    data_type: str = "string"
+    data_type: str = "hash"
 
 
 class Neo4jSettings(BaseModel):
