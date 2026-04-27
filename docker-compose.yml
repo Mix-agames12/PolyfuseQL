@@ -137,8 +137,8 @@ services:
       NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
       NEO4J_server_directories_import: "/var/lib/neo4j/import"
     volumes:
-      - ./docker/tpch-data:/var/lib/neo4j/import/tpch-data:ro
-      - ./tests/fixtures:/var/lib/neo4j/import/fixtures:ro
+      - ./docker/tpch-data:/var/lib/neo4j/import/tpch-data
+      - ./tests/fixtures:/var/lib/neo4j/import/fixtures
     ports:
       - "7687:7687"
       - "7474:7474"
@@ -277,7 +277,7 @@ services:
       context: . # The context is the root of your project
       dockerfile: docker/cassandra-translator/Dockerfile # Path to the new Dockerfile
     container_name: polyfuseql_cassandra_translator
-    profiles: [ "cassandra-translator", "cassandra-services", "cassandra-loader" ]
+    profiles: [ "cassandra-translator", "cassandra-services" ]
     ports:
       - "3101:3000"
     environment:
@@ -306,7 +306,7 @@ services:
       context: .
       dockerfile: docker/cassandra-auth-service/Dockerfile
     container_name: polyfuseql_cassandra_translator_auth
-    profiles: [ "cassandra-auth", "cassandra-services", "cassandra-loader" ]
+    profiles: [ "cassandra-auth", "cassandra-services" ]
     ports:
       - "3001:3001"
     environment:
@@ -334,7 +334,7 @@ services:
       context: .
       dockerfile: docker/cassandra-permission-service/Dockerfile
     container_name: polyfuseql_cassandra_translator_permission
-    profiles: [ "cassandra-permission", "cassandra-services", "cassandra-loader" ]
+    profiles: [ "cassandra-permission", "cassandra-services" ]
     ports:
       - "3002:3002"
     environment:
@@ -365,7 +365,7 @@ services:
       CASSANDRA_PASSWORD: cassandra
       CASSANDRA_KEYSPACE: tpch
     command: >
-      sh -c "apk add --no-cache gcc musl-dev python3-dev &&
+      sh -c "apk add --no-cache gcc musl-dev python3-dev libev-dev &&
              pip install --no-cache-dir cassandra-driver &&
              python /scripts/load_cassandra.py"
     depends_on:
