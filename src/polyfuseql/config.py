@@ -47,25 +47,12 @@ class MongoDbSettings(BaseModel):
     db: str = os.getenv("MONGO_DB_NAME", "tpch")
 
 
-class CassandraAuthSettings(BaseModel):
-    """
-    Defines settings for connecting to the separate auth microservice.
-    The port is based on the host mapping from 'docker ps' (3001->3001).
-    """
-
-    url: str = "http://polyfuseql_cassandra_translator_auth:3001"
-    cedula: str = "admin"
-    nombre: str = "Admin User"
-    password: str = "admin123"
-
-
 class CassandraSettings(BaseModel):
     user: str | None = "cassandra"
     password: str | None = "cassandra"
     host: str = "cassandra"
-    port: int = 9043
-    keyspace: str = "mykeyspace"
-    auth: CassandraAuthSettings = Field(default_factory=CassandraAuthSettings)
+    port: int = 9042
+    keyspace: str = "tpch"
 
 
 class SparkSettings(BaseModel):
