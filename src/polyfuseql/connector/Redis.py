@@ -52,7 +52,7 @@ class RedisConnector(Connector, SparkTranslator):
 
     def get_data_type(self) -> str:
         """Returns the current data type strategy for Redis operations."""
-        return self._options.get("data_type", settings.redis.data_type)
+        return self._options.get("data_type", settings.redis.data_type).lower()
 
     async def connect(self) -> None:
         if not self._client:
@@ -124,10 +124,9 @@ class RedisConnector(Connector, SparkTranslator):
 
         dynamic_model = get_pydantic_model(entity, schema)
         try:
-            # Pydantic expects camelCase keys
             validated_model = dynamic_model(**raw_data)
             logging.info("Validated model: %s", validated_model.model_dump())
-            return raw_data | validated_model.model_dump()
+            return _camelize_keys(validated_model.model_dump())
         except ValidationError:
             return _camelize_keys(raw_data)
 
@@ -154,7 +153,7 @@ class RedisConnector(Connector, SparkTranslator):
         logging.info(f"insert-key: {key}")
         logging.info(f"insert-str_payload: {str_payload}")
         logging.info(f"insert-data_type: {data_type}")
-        if data_type == "string":
+        if data_type in ("string", "str"):
             await r.set(key, json.dumps(str_payload))
         elif data_type == "json":
             await r.json().set(key, "$", str_payload)
@@ -240,12 +239,12 @@ class RedisConnector(Connector, SparkTranslator):
             if not res:
                 continue
             if data_type == "hash":
-                processed_results.append(dict(res))
+                processed_results.append(_camelize_keys(dict(res)))
             else:  # string or json
                 try:
                     # [TECH DEBT FIX] Replaced unsafe literal_eval
                     # with json.loads
-                    processed_results.append(json.loads(res))
+                    processed_results.append(_camelize_keys(json.loads(res)))
                 except (json.JSONDecodeError, TypeError):
                     logging.warning(f"Could not parse Redis result: {res}")
         return processed_results
