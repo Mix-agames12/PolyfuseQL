@@ -20,17 +20,24 @@ async def test_delete_from_neo4j():
         assert insert_result["id"] == person_id
 
         # Confirm it exists before deleting.
-        doc = await client.get("person", person_id)
+        doc = await client.get(
+            "person", person_id, primary_key_column="id", engine="neo4j"
+        )
+        print(doc)
         assert doc["name"] == person_name
 
         # Act: Delete the node.
         delete_sql = f"DELETE FROM Person WHERE id = '{person_id}'"
-        delete_result = await client.execute(delete_sql, engine="neo4j")
+        delete_result = await client.execute(
+            delete_sql, engine="neo4j", use_catalogue=False
+        )
 
         # Assert: The connector should report 1 node deleted.
         assert delete_result["deleted_count"] == 1
 
         # Assert: Verify the node is gone.
-        deleted_doc = await client.get("person", person_id)
+        deleted_doc = await client.get(
+            "person", person_id, primary_key_column="id", engine="neo4j"
+        )
         msg = "The node should have been deleted, but was found."
         assert not deleted_doc, msg

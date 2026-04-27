@@ -1,23 +1,28 @@
-import uuid
-
 import pytest
 from polyfuseql.client.PolyClient import PolyClient
+
+# We will test INSERT on the TPC-H 'region' table,
+# which is mapped to Postgres in schemas.json.
+
+REGION_ID = 99
+REGION_NAME = "Test Region"
 
 
 @pytest.mark.asyncio
 async def test_insert_postgres():
     async with PolyClient() as client:
-        # Generate a unique ID to avoid UniqueViolationError on reruns
-        customer_id = str(uuid.uuid4())[:5]
-        company_name = "New PG Co"
-        print("customer_id", customer_id)
-        print("company_name", company_name)
+        # Use column names as defined in schemas.json
+        sql = "INSERT INTO region (r_regionkey, r_name) "
+        sql += f"VALUES ({REGION_ID}, '{REGION_NAME}')"
 
-        # Use CamelCase to match Python code, connector will handle snake_case
-        sql = "INSERT INTO customers (customer_id, company_name) "
-        sql += f"VALUES ('{customer_id}', '{company_name}')"  # noqa: F501
+        result = await client.execute(
+            sql, engine="postgres", use_catalogue=True
+        )  # noqa:E501
+        assert result["rRegionkey"] == REGION_ID
+        assert result["rName"].strip() == REGION_NAME
 
-        result = await client.execute(sql, engine="postgres")
-        print(result.keys())
-        assert result["customerId"] == customer_id
-        assert result["companyName"] == company_name
+        # Cleanup
+        await client.execute(
+            f"DELETE FROM region WHERE r_regionkey = {REGION_ID}",
+            engine="postgres",
+        )
