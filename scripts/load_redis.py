@@ -148,7 +148,7 @@ def load_table(r, table_name):
             # e.g. lineitem:100:2 (Composite) or customer:5 (Simple)
             try:
                 pk_values = [parts[i] for i in pk_indices]
-                redis_key = f"{table_name}:{':'.join(pk_values)}"
+                redis_key = f"{table_name.capitalize()}:{':'.join(pk_values)}"
 
                 # Construct Data Hash using correct column names
                 # We zip schema columns with file parts
