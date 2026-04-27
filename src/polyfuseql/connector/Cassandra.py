@@ -1,295 +1,329 @@
+import asyncio
+import csv
 import logging
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
-import aiohttp
 import aiofiles
 from sqlglot import exp
 
 from polyfuseql.catalogue.Catalogue import Catalogue
-from polyfuseql.config import AppSettings
-from polyfuseql.connector import Connector
+from polyfuseql.connector.Connector import Connector
+from polyfuseql.utils.utils import _camelize_keys, get_pydantic_model
 
 logger = logging.getLogger(__name__)
 
 
 class CassandraConnector(Connector):
     """
-    Connector for Cassandra that relies on an external
-    translation microservice. All operations are sent as SQL strings to
-    the translator API.
+    Local connector for Cassandra using the cassandra-driver.
+    Connects directly to Cassandra without requiring external
+    translator/auth/permission microservices.
+    Returns data in JSON format with camelCase keys,
+    consistent with PostgreSQL and Redis connectors.
     """
 
     def __init__(
         self,
-        settings: AppSettings,
-        options: Optional[Dict] = None,
         catalogue: Optional[Catalogue] = None,
-        is_local_implementation: bool = False,
-    ):
-        # Set is_local_implementation to False
-        super().__init__(options, catalogue, is_local_implementation)
-        self.settings = settings.cassandra
-        self.auth_settings = settings.cassandra.auth
-        self.translator_url = settings.cassandra_translator_url
-        self._http_session: Optional[aiohttp.ClientSession] = None
-        self._translator_auth_token: Optional[str] = None
+        options: Optional[Dict] = None,
+    ) -> None:
+        # is_local_implementation=True — handles queries locally
+        super().__init__(options=options, catalogue=catalogue,
+                         is_local_implementation=True)
+
+        from polyfuseql.config import settings
+
+        self._host = settings.cassandra.host
+        self._port = settings.cassandra.port
+        self._user = settings.cassandra.user
+        self._password = settings.cassandra.password
+        self._keyspace = settings.cassandra.keyspace
+        self._cluster = None
+        self._session = None
         logger.info(
-            f"CassandraConnector initialized for translator at {self.translator_url}"  # noqa:E501
+            f"CassandraConnector initialized for "
+            f"{self._host}:{self._port}/{self._keyspace}"
         )
 
-    async def ping(self) -> bool:
-        """Pings the translator service's health check endpoint."""
-        if not self._http_session:
-            raise ConnectionError(
-                "Cannot ping, session not connected. Call connect() first."
-            )
-
-        # The health endpoint is likely at the root or a dedicated /health path
-        # Using the base URL as a simple connectivity check.
-        health_url = self.translator_url.rsplit("/api", 1)[0] + "/api"
-        try:
-            async with self._http_session.get(
-                health_url, timeout=5
-            ) as response:  # noqa:E501
-                return (
-                    response.status < 500
-                )  # Consider any non-server error as a success
-        except Exception as e:
-            logger.error(f"Failed to ping Cassandra translator service: {e}")
-            return False
-
-    async def _authenticate_with_translator(self):
-        """
-        Logs into the separate authentication service to get a JWT.
-        """
-        if not self._http_session or self._http_session.closed:
-            self._http_session = aiohttp.ClientSession()
-
-        auth_url = f"{self.auth_settings.url}/api/auth/login"
-        credentials = {
-            "cedula": self.auth_settings.cedula,
-            "nombre": self.auth_settings.nombre,
-            "contrasena": self.auth_settings.password,
-        }
-
-        try:
-            logger.info(f"Authenticating with auth service at {auth_url}...")
-            async with self._http_session.post(
-                auth_url, json=credentials, timeout=10
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
-                self._translator_auth_token = data.get("accessToken")
-                if self._translator_auth_token:
-                    logger.info("Successfully authenticated and received JWT.")
-                else:
-                    raise ConnectionError(
-                        "Authentication successful, but no access token received."  # noqa:E501
-                    )
-        except aiohttp.ClientError as e:
-            logger.error(f"Failed to authenticate with auth service: {e}")
-            raise ConnectionError(
-                f"Could not authenticate with auth service: {e}"
-            )  # noqa:E501
-
-    async def connect(self):
-        """
-        Initializes the HTTP session and authenticates to get a token.
-        """
-        if self._http_session and not self._http_session.closed:
+    async def connect(self) -> None:
+        """Establishes a connection to the Cassandra cluster."""
+        if self._session:
             return
 
-        try:
-            await self._authenticate_with_translator()
-            logger.info("HTTP session for Cassandra translator is ready.")
-        except Exception as e:
-            logger.error(
-                f"Failed to initialize HTTP session or authenticate: {e}"
-            )  # noqa:E501
-            await self.disconnect()
-            raise
+        def _connect_sync():
+            from cassandra.cluster import Cluster
+            from cassandra.auth import PlainTextAuthProvider
 
-    async def disconnect(self):
-        """Closes the HTTP session."""
-        if self._http_session and not self._http_session.closed:
-            await self._http_session.close()
-            self._http_session = None
-            logger.info("Cassandra translator HTTP session closed.")
-
-    def _format_value(self, value: Any) -> str:
-        """Formats a Python value into a SQL literal string."""
-        if isinstance(value, str):
-            return f"""'{value.replace("'", "''")}'"""
-        if isinstance(value, (int, float, bool)):
-            return str(value)
-        if value is None:
-            return "NULL"
-        return f"'{str(value)}'"
-
-    async def _execute_via_translator(
-        self, sql_query: str
-    ) -> List[Dict[str, Any]]:  # noqa:E501
-        """
-        Sends an SQL query to the external translator service for execution
-        and correctly parses the nested response based on diagnostic logs.
-        """
-        if not self._http_session:
-            raise ConnectionError(
-                "HTTP session not initialized. Call connect() first."
-            )  # noqa:E501
-
-        if not self._translator_auth_token:
-            raise ConnectionError("Not authenticated. Cannot execute query.")
-
-        url = f"{self.translator_url}/api/translator/execute"
-        payload = {"sql": sql_query, "keyspace": self.settings.keyspace}
-        headers = {"Authorization": f"Bearer {self._translator_auth_token}"}
-
-        try:
-            logger.info(f"Executing SQL via translator: {sql_query}")
-            async with self._http_session.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=60),
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
-
-                if not data.get("success"):
-                    error_msg = data.get(
-                        "message", "Unknown error from translator API"
-                    )  # noqa:E501
-                    logger.error(f"Translator API error: {error_msg}")
-                    raise ConnectionError(
-                        f"Translator API indicated failure: {error_msg}"
-                    )
-
-                execution_result = data.get("executionResult", {})
-                if not execution_result.get("success"):
-                    error_msg = execution_result.get(
-                        "message", "Unknown execution error"
-                    )
-                    logger.error(f"Cassandra execution error: {error_msg}")
-                    raise ConnectionError(
-                        f"Cassandra execution failed: {error_msg}"
-                    )  # noqa:E501
-
-                # The actual data rows are nested inside
-                # executionResult -> data -> rows
-                result_data = execution_result.get("data", {})
-                rows = result_data.get("rows")
-
-                # For INSERT/UPDATE/DELETE, 'rows' can be null. For SELECT,
-                # it's a list.
-                # In all cases where rows are not returned, we return an
-                # empty list
-                # to match the test assertions
-                # (e.g., `assert insert_result == []`).
-                return rows if rows is not None else []
-
-        except aiohttp.ClientResponseError as e:
-            logger.error(
-                f"Error from translator service: {e.status}, {e.message}"
-            )  # noqa:E501
-            raise ConnectionError(
-                f"Failed to communicate with Cassandra translator: {e.status} {e.message}"  # noqa:E501
+            auth_provider = None
+            if self._user and self._password:
+                auth_provider = PlainTextAuthProvider(
+                    username=self._user, password=self._password
+                )
+            cluster = Cluster(
+                [self._host],
+                port=self._port,
+                auth_provider=auth_provider,
             )
+            session = cluster.connect(self._keyspace)
+            return cluster, session
+
+        self._cluster, self._session = await asyncio.to_thread(
+            _connect_sync
+        )
+        logger.info("Cassandra connection established.")
+
+    async def disconnect(self) -> None:
+        """Closes the Cassandra connection."""
+        if self._cluster:
+            def _shutdown():
+                self._cluster.shutdown()
+            await asyncio.to_thread(_shutdown)
+            self._cluster = None
+            self._session = None
+            logger.info("Cassandra connection closed.")
+
+    def _get_session(self):
+        """Returns the active Cassandra session."""
+        if not self._session:
+            raise ConnectionError(
+                "CassandraConnector is not connected. Call connect() first."
+            )
+        return self._session
+
+    async def ping(self) -> bool:
+        """Pings the Cassandra cluster."""
+        session = self._get_session()
+        result = await asyncio.to_thread(
+            session.execute, "SELECT release_version FROM system.local"
+        )
+        return result is not None
+
+    async def count(self, entity: str) -> int:
+        """Counts all records for a given entity."""
+        session = self._get_session()
+        cql = f"SELECT COUNT(*) FROM {entity}"
+        result = await asyncio.to_thread(session.execute, cql)
+        row = result.one()
+        return row.count if row else 0
+
+    async def get(
+        self, entity: str, pk_col: str, pk_val: Any
+    ) -> Dict[str, Any]:
+        """Retrieves a single record by primary key."""
+        session = self._get_session()
+
+        # Cast pk_val to proper type for Cassandra
+        pk_val = self._cast_pk_value(pk_val)
+
+        cql = f"SELECT * FROM {entity} WHERE {pk_col} = %s"
+        result = await asyncio.to_thread(session.execute, cql, [pk_val])
+        row = result.one()
+        if not row:
+            return {}
+
+        raw_data = self._row_to_dict(row)
+        return self._validate_and_camelize(entity, raw_data)
+
+    async def get_all(self, entity: str) -> List[Dict[str, Any]]:
+        """Retrieves all records for a given entity."""
+        session = self._get_session()
+        cql = f"SELECT * FROM {entity}"
+        result = await asyncio.to_thread(session.execute, cql)
+        rows = result.all()
+
+        processed = []
+        for row in rows:
+            raw_data = self._row_to_dict(row)
+            processed.append(self._validate_and_camelize(entity, raw_data))
+        return processed
+
+    async def insert(self, entity: str, payload: Dict[str, Any]) -> Any:
+        """Inserts a new record."""
+        session = self._get_session()
+        cols = ", ".join(payload.keys())
+        placeholders = ", ".join(["%s"] * len(payload))
+        values = list(payload.values())
+
+        cql = f"INSERT INTO {entity} ({cols}) VALUES ({placeholders})"
+        await asyncio.to_thread(session.execute, cql, values)
+        return {"status": "inserted", "table": entity}
+
+    async def update(
+        self, entity: str, pk_col: str, pk_val: Any,
+        payload: Dict[str, Any]
+    ) -> int:
+        """Updates a record by primary key."""
+        session = self._get_session()
+        pk_val = self._cast_pk_value(pk_val)
+
+        set_clause = ", ".join(f"{k} = %s" for k in payload.keys())
+        values = list(payload.values()) + [pk_val]
+
+        cql = f"UPDATE {entity} SET {set_clause} WHERE {pk_col} = %s"
+        await asyncio.to_thread(session.execute, cql, values)
+        return 1
+
+    async def delete(self, entity: str, pk_col: str, pk_val: Any) -> int:
+        """Deletes a record by primary key."""
+        session = self._get_session()
+        pk_val = self._cast_pk_value(pk_val)
+
+        cql = f"DELETE FROM {entity} WHERE {pk_col} = %s"
+        await asyncio.to_thread(session.execute, cql, [pk_val])
+        return 1
 
     async def query(
         self, sql: str, params: Optional[tuple] = None
     ) -> List[Dict[str, Any]]:
-        return await self._execute_via_translator(sql)
-
-    async def get(
-        self, entity: str, pk_val: Any, pk_col: str
-    ) -> Optional[Dict[str, Any]]:
-        pk_val_formatted = self._format_value(pk_val)
-        sql = f"SELECT * FROM {entity} WHERE {pk_col} = {pk_val_formatted}"
-        results = await self.query(sql)
-        return results[0] if results else None
-
-    async def get_all(self, entity: str) -> List[Dict[str, Any]]:
-        sql = f"SELECT * FROM {entity}"
-        return await self.query(sql)
-
-    async def insert(self, entity: str, payload: Dict[str, Any]) -> Any:
-        """Builds and executes an INSERT statement via the translator."""
-        cols = ", ".join(payload.keys())
-        vals = ", ".join(self._format_value(v) for v in payload.values())
-        sql = f"INSERT INTO {entity} ({cols}) VALUES ({vals})"
-        # The API returns no meaningful data for insert,
-        # so we return the result
-        # of the execution, which will be an empty list.
-        return await self.query(sql)
-
-    async def update(
-        self, entity: str, pk_col: str, pk_val: Any, payload: Dict[str, Any]
-    ) -> int:
-        set_clause = ", ".join(
-            f"{k} = {self._format_value(v)}" for k, v in payload.items()
-        )
-        pk_val_formatted = self._format_value(pk_val)
-        sql = f"UPDATE {entity} SET {set_clause} WHERE {pk_col} = {pk_val_formatted}"  # noqa:E501
-        await self._execute_via_translator(sql)
-        # The API doesn't return an affected row count for updates.
-        # Returning 1 to signify success,
-        # as per the abstract method's contract.
-        return 1
-
-    async def delete(self, entity: str, pk_col: str, pk_val: Any) -> int:
-        pk_val_formatted = self._format_value(pk_val)
-        sql = f"DELETE FROM {entity} WHERE {pk_col} = {pk_val_formatted}"
-        await self._execute_via_translator(sql)
-        # The API doesn't return an affected row count for deletes.
-        # Returning 1 to signify success.
-        return 1
-
-    async def count(self, entity: str) -> int:
-        sql = f"SELECT COUNT(*) FROM {entity}"
-        result = await self._execute_via_translator(sql)
-        # Based on logs, the response is `[{'count': '2'}]`
-        if result and isinstance(result, list) and len(result) > 0:
-            # The count value is returned as a string.
-            count_value = result[0].get("count", 0)
-            return int(count_value)
-        return 0
+        """Executes a CQL query directly."""
+        session = self._get_session()
+        if params:
+            result = await asyncio.to_thread(
+                session.execute, sql, list(params)
+            )
+        else:
+            result = await asyncio.to_thread(session.execute, sql)
+        rows = result.all()
+        return [_camelize_keys(self._row_to_dict(row)) for row in rows]
 
     async def join(self, ast: exp.Select) -> List[Dict[str, Any]]:
-        return await self._execute_via_translator(ast.sql())
+        """
+        Cassandra does not support JOINs natively.
+        Falls back to application-side join logic.
+        """
+        raise NotImplementedError(
+            "Cassandra does not support JOINs. "
+            "Use application-side logic or denormalized tables."
+        )
 
     async def group_by(self, ast: exp.Select) -> List[Dict[str, Any]]:
-        return await self._execute_via_translator(ast.sql())
+        """Executes a GROUP BY query (limited Cassandra support)."""
+        # Cassandra has limited GROUP BY support, try to execute directly
+        cql = ast.sql()
+        return await self.query(cql)
 
     async def aggregate(self, ast: exp.Select) -> List[Dict[str, Any]]:
-        return await self._execute_via_translator(ast.sql())
+        """Executes a simple aggregation query."""
+        cql = ast.sql()
+        return await self.query(cql)
 
     async def bulk_insert(self, table_name: str, file_path: str) -> int:
-        logger.warning(
-            "Performing row-by-row bulk insert for Cassandra via translator. This may be slow."  # noqa:E501
-        )
+        """Bulk inserts data from a TPC-H .tbl file."""
+        session = self._get_session()
+        schema = self.catalogue.get_schema(table_name)
+        if not schema:
+            raise ValueError(f"No schema for table: {table_name}")
+
+        columns = list(schema["columns"].keys())
+        col_types = schema["columns"]
+
         count = 0
-        import csv
+        async with aiofiles.open(
+            file_path, "r", encoding="utf-8"
+        ) as f:
+            content = await f.read()
+            reader = csv.reader(content.splitlines(), delimiter="|")
+
+            cols_str = ", ".join(columns)
+            placeholders = ", ".join(["%s"] * len(columns))
+            cql = (
+                f"INSERT INTO {table_name} ({cols_str}) "
+                f"VALUES ({placeholders})"
+            )
+
+            for line in reader:
+                if line and line[-1] == "":
+                    line.pop()
+
+                if len(line) != len(columns):
+                    continue
+
+                values = self._cast_row(line, columns, col_types)
+                if values:
+                    await asyncio.to_thread(
+                        session.execute, cql, values
+                    )
+                    count += 1
+
+                if count % 2000 == 0 and count > 0:
+                    logger.info(f"Loaded {count} rows into {table_name}...")
+
+        logger.info(
+            f"Loaded {count} records into '{table_name}'."
+        )
+        return count
+
+    # ────────────── Helper Methods ────────────── #
+
+    @staticmethod
+    def _row_to_dict(row) -> Dict[str, Any]:
+        """Converts a Cassandra Row to a plain dict."""
+        if hasattr(row, '_asdict'):
+            return dict(row._asdict())
+        # Fallback for named tuples or Row objects
+        return {col: getattr(row, col) for col in row._fields}
+
+    def _validate_and_camelize(
+        self, entity: str, raw_data: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Validates data through the Pydantic model and returns
+        camelCase keys, consistent with Postgres/Redis connectors.
+        """
+        # Convert Cassandra date types to Python date for serialization
+        for key, value in raw_data.items():
+            if hasattr(value, 'date') and callable(value.date):
+                raw_data[key] = value.date()
+            elif isinstance(value, date) and not isinstance(value, datetime):
+                raw_data[key] = value
+
+        schema = self.catalogue.get_schema(entity)
+        if not schema:
+            return _camelize_keys(raw_data)
 
         try:
-            # SonarQube Fix (python:S7493): Use aiofiles for async file I/O
-            async with aiofiles.open(
-                file_path, mode="r", encoding="utf-8", newline=""
-            ) as f:
-                # Read the file content asynchronously
-                content = await f.read()
-                # csv.DictReader expects an iterator of lines
-                reader = csv.DictReader(content.splitlines())
-                for row in reader:
-                    # Filter out None values from the row
-                    clean_row = {k: v for k, v in row.items() if v is not None}
-                    if clean_row:
-                        await self.insert(table_name, clean_row)
-                        count += 1
-            return count
-        except FileNotFoundError:
-            logger.error(f"Bulk insert file not found: {file_path}")
-            return 0
-        except Exception as e:
-            logger.error(f"Bulk insert failed: {e}")
-            raise
+            dynamic_model = get_pydantic_model(entity, schema)
+            # Convert all values to strings for pydantic casting
+            str_data = {k: str(v) if v is not None else None
+                        for k, v in raw_data.items()}
+            validated = dynamic_model(**str_data)
+            return _camelize_keys(validated.model_dump())
+        except Exception:
+            return _camelize_keys(raw_data)
+
+    @staticmethod
+    def _cast_pk_value(pk_val: Any) -> Any:
+        """Casts the primary key value to a proper Python type."""
+        from decimal import Decimal
+        if isinstance(pk_val, Decimal):
+            if pk_val == int(pk_val):
+                return int(pk_val)
+            return float(pk_val)
+        return pk_val
+
+    @staticmethod
+    def _cast_row(
+        parts: List[str], columns: List[str],
+        col_types: Dict[str, str]
+    ) -> Optional[List[Any]]:
+        """Casts a raw CSV row to typed values for CQL insertion."""
+        try:
+            values = []
+            for val, col in zip(parts, columns):
+                col_type = col_types.get(col, "str")
+                val = val.strip()
+                if not val:
+                    values.append(None)
+                elif col_type == "int":
+                    values.append(int(val))
+                elif col_type == "decimal":
+                    values.append(float(val))
+                elif col_type == "date":
+                    values.append(val)  # Cassandra accepts date strings
+                else:
+                    values.append(val)
+            return values
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Skipping malformed row: {parts}. Error: {e}")
+            return None
