@@ -30,10 +30,10 @@ class Settings(BaseSettings):
 
     # Cassandra settings
     CASSANDRA_HOST: str = os.getenv("CASSANDRA_HOST", "localhost")
-    CASSANDRA_PORT: int = int(os.getenv("CASSANDRA_PORT", 9043))
+    CASSANDRA_PORT: int = int(os.getenv("CASSANDRA_PORT", 9042))
     CASSANDRA_USER: str = os.getenv("CASSANDRA_USER", "cassandra")
     CASSANDRA_PASSWORD: str = os.getenv("CASSANDRA_PASSWORD", "cassandra")
-    CASSANDRA_KEYSPACE: str = os.getenv("CASSANDRA_KEYSPACE", "mykeyspace")
+    CASSANDRA_KEYSPACE: str = os.getenv("CASSANDRA_KEYSPACE", "tpch")
 
     # MongoDB settings
     MONGODB_USER: str = os.getenv("MONGODB_USER", "root")
