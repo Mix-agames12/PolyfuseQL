@@ -27,8 +27,6 @@ class ConnectorFactory:
             return CassandraConnector(
                 catalogue=catalogue,
                 options=options,
-                settings=settings,
-                is_local_implementation=False,
             )
         elif conn_type == "mongodb":
             return MongoDbConnector(
