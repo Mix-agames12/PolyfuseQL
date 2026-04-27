@@ -100,11 +100,14 @@ services:
       test: [ "CMD", "redis-cli", "-a", "tpch", "ping" ]
       interval: 5s
       retries: 10
+    depends_on:
+      dbgen:
+        condition: service_completed_successfully
     networks:
       - polyfuse-net
   
   redis-loader:
-    image: python:3.12-slim
+    image: python:3.12-alpine
     container_name: polyfuseql_loader_redis_client
     profiles: [ "redis-loader" ]
     volumes:
@@ -115,7 +118,7 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: tpch
     command: >
-      sh -c "pip install redis && python /scripts/load_redis.py"
+      sh -c "pip install --no-cache-dir redis && python /scripts/load_redis.py"
     depends_on:
       redis:
         condition: service_healthy
@@ -127,7 +130,6 @@ services:
     image: neo4j:5-community
     container_name: polyfuseql_neo4j_graph
     profiles: [ "neo4j", "neo4j-loader" ]
-    user: "${UID:-1000}:${GID:-1000}"
     environment:
       NEO4J_AUTH: neo4j/password
       NEO4J_PLUGINS: '["apoc"]'
@@ -145,6 +147,7 @@ services:
       interval: 10s
       timeout: 15s
       retries: 20
+      start_period: 30s
     depends_on:
       dbgen:
         condition: service_completed_successfully
@@ -194,7 +197,7 @@ services:
     restart: unless-stopped
 
   mongo-loader:
-    image: python:3.12-slim
+    image: python:3.12-alpine
     container_name: polyfuseql_loader_mongo_client
     profiles: [ "mongo-loader" ]
     volumes:
@@ -207,7 +210,7 @@ services:
       MONGO_INITDB_ROOT_PASSWORD: example
     
     command: >
-      sh -c "pip install pymongo && python /scripts/load_mongo.py"
+      sh -c "pip install --no-cache-dir pymongo && python /scripts/load_mongo.py"
     depends_on:
       mongodb:
         condition: service_healthy
@@ -263,6 +266,9 @@ services:
       timeout: 10s
       retries: 10
       start_period: 60s
+    depends_on:
+      dbgen:
+        condition: service_completed_successfully
     networks:
       - polyfuse-net
 
@@ -346,7 +352,7 @@ services:
       - polyfuse-net
 
   cassandra-loader:
-    image: python:3.12-slim
+    image: python:3.12-alpine
     container_name: polyfuseql_loader_cassandra_client
     profiles: [ "cassandra-loader" ]
     volumes:
@@ -359,7 +365,9 @@ services:
       CASSANDRA_PASSWORD: cassandra
       CASSANDRA_KEYSPACE: tpch
     command: >
-      sh -c "pip install cassandra-driver && python /scripts/load_cassandra.py"
+      sh -c "apk add --no-cache gcc musl-dev python3-dev &&
+             pip install --no-cache-dir cassandra-driver &&
+             python /scripts/load_cassandra.py"
     depends_on:
       cassandra:
         condition: service_healthy
