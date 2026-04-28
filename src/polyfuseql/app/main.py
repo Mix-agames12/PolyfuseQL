@@ -6,6 +6,7 @@ import os
 import logging
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 # FIX: Changed imports to be absolute from the 'polyfuseql' package root.
 from polyfuseql.app.api import postgres, redis, neo4j, cassandra, mongodb
@@ -15,6 +16,15 @@ app = FastAPI(
     title="PolyFuseQL API",
     description="A robust FastAPI backend for the PolyFuseQL middleware.",
     version="1.0.0",
+)
+
+# CORS: Allow Angular frontend to communicate with the API
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 logger = logging.getLogger("uvicorn.error")
