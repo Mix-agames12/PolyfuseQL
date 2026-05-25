@@ -4,11 +4,13 @@ API router for PostgreSQL operations.
 """
 import logging
 import traceback
-from fastapi import APIRouter, HTTPException
+from typing import Dict, Any
+from fastapi import APIRouter, HTTPException, Depends
 
 # FIX: Changed imports to be absolute from the 'polyfuseql' package root.
 from polyfuseql.app.schemas.schemas import QueryRequest, QueryResponse
 from polyfuseql.app.services import services
+from polyfuseql.app.core.auth_middleware import get_current_user
 
 router = APIRouter()
 logger = logging.getLogger("uvicorn.error")
@@ -24,7 +26,10 @@ async def read_root():
 
 
 @router.post("/query", response_model=QueryResponse)
-async def postgres_query(request: QueryRequest):
+async def postgres_query(
+    request: QueryRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+):
     """
     Executes a SQL query on the PostgreSQL database.
     """
@@ -32,9 +37,10 @@ async def postgres_query(request: QueryRequest):
     try:
         logger.debug("Executing SQL query")
         logger.debug(f"request: {request}")
+        user_id = str(current_user.get("sub", "anonymous"))
         results = await services.execute_query(
-            engine="postgres", sql=request.sql
-        )  # noqa:E501
+            engine="postgres", sql=request.sql, user_id=user_id
+        )
         return {"result": results}
     except Exception as e:
         print(e)
