@@ -10,12 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # FIX: Changed imports to be absolute from the 'polyfuseql' package root.
 from polyfuseql.app.api import postgres, redis, neo4j, cassandra, mongodb
+from polyfuseql.app.api import auth, schema, connection
+from polyfuseql.app.services.auth_service import init_db
 
 # Initialize the FastAPI app
 app = FastAPI(
     title="PolyFuseQL API",
     description="A robust FastAPI backend for the PolyFuseQL middleware.",
-    version="1.0.0",
+    version="2.0.0",
 )
 
 # CORS: Allow Angular frontend to communicate with the API
@@ -29,12 +31,27 @@ app.add_middleware(
 
 logger = logging.getLogger("uvicorn.error")
 
+# Initialize SQLite auth database on startup
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+    logger.info("Auth database initialized.")
+
 # Include the API routers for each database
 app.include_router(postgres.router, prefix="/postgres", tags=["PostgreSQL"])
 app.include_router(redis.router, prefix="/redis", tags=["Redis"])
 app.include_router(neo4j.router, prefix="/neo4j", tags=["Neo4j"])
 app.include_router(cassandra.router, prefix="/cassandra", tags=["Cassandra"])
 app.include_router(mongodb.router, prefix="/mongodb", tags=["MongoDB"])
+
+# Auth & User Management
+app.include_router(auth.router, prefix="/auth", tags=["Authentication"])
+
+# Schema Introspection
+app.include_router(schema.router, prefix="/schema", tags=["Schema"])
+
+# Connection Management
+app.include_router(connection.router, prefix="/connections", tags=["Connections"])
 
 @app.get("/", tags=["Root"])
 async def read_root():
