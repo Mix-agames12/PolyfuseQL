@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl -sSL https://install.python-poetry.org | python3 -
 
 # Copy only dependency definition files first to leverage Docker cache
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml ./
 
 # Install dependencies (production only, no dev deps)
 # --no-root skips installing the project itself, speeding up the build when code changes
