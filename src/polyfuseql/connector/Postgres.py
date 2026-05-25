@@ -21,11 +21,11 @@ class PostgresConnector(Connector):
         return await self.query(ast.sql())
 
     async def get_all(self, entity: str) -> List[Dict[str, Any]]:
-        """Not needed for this connector"""
-        pass
+        """Fetches all records from the given table."""
+        return await self.query(f'SELECT * FROM "{entity.lower()}"')
 
     def __init__(self, catalogue: Optional[Catalogue] = None) -> None:
-        super().__init__(catalogue=catalogue)
+        super().__init__(catalogue=catalogue, is_local_implementation=False)
         self._host = settings.postgres.host
         self._port = settings.postgres.port
         self._user = settings.postgres.user
