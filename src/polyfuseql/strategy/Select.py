@@ -36,10 +36,14 @@ class SelectStrategy(QueryStrategy):
         if val_lower == "false":
             return False
 
-        # Handle Numerics
+        # Handle Numerics — use native int/float for cross-engine
+        # compatibility (Neo4j driver rejects decimal.Decimal)
         try:
-            # Use Decimal for precision
-            return Decimal(val_str)
+            d = Decimal(val_str)
+            # Convert to native types for compatibility
+            if "." not in val_str:
+                return int(d)
+            return float(d)
         except InvalidOperation:
             # Fallback for simple int/float
             try:
@@ -85,13 +89,45 @@ class SelectStrategy(QueryStrategy):
             logging.warning(msg)
             return str(where_expr.left.this)
 
+    def _is_pk_query(self, where_expr, use_catalogue, client, table_name):
+        """
+        Checks if the WHERE clause column matches the declared PK.
+        Returns (is_pk, pk_col, where_col) tuple.
+        """
+        where_col = str(where_expr.left.this) if where_expr.left else None
+
+        if use_catalogue:
+            catalogue_entry = client._catalogue.get(table_name.lower())
+            if catalogue_entry:
+                pk_col = catalogue_entry.get("pk", None)
+                if isinstance(pk_col, list):
+                    return where_col in pk_col, pk_col, where_col
+                return where_col == pk_col, pk_col, where_col
+
+        return True, where_col, where_col
+
     async def _handle_select_by_pk(self, conn, ast, use_catalogue, client):
         """
         [Sonar Refactor S3776] Helper for SelectStrategy:
         Executes a 'get' operation for a 'SELECT ... WHERE pk = val' query.
+        If the WHERE column is NOT the PK, delegates to _handle_select_with_filter.
         """
         table_name = ast.find(exp.Table).name
         where_expr = ast.args.get("where").this
+
+        # Check if the WHERE column matches the PK
+        is_pk, pk_col, where_col = self._is_pk_query(
+            where_expr, use_catalogue, client, table_name
+        )
+
+        if not is_pk:
+            logging.info(
+                f"WHERE column '{where_col}' != PK '{pk_col}', "
+                f"using get_all with filter for table '{table_name}'"
+            )
+            return await self._handle_select_with_filter(
+                conn, ast, table_name, where_expr
+            )
 
         # 1. Determine the PK column
         pk_col = self._get_pk_column(
@@ -104,6 +140,48 @@ class SelectStrategy(QueryStrategy):
         # 3. Execute the 'get'
         result = await conn.get(table_name, pk_col, pk_val)
         return [result] if result else []
+
+    async def _handle_select_with_filter(
+        self, conn, ast, table_name, where_expr
+    ):
+        """
+        Handles SELECT with WHERE on a non-PK column by using get_all
+        with a WHERE clause filter.
+        """
+        where_col = str(where_expr.left.this)
+        where_val = self._parse_pk_value_from_literal(where_expr.right)
+
+        # Build a WHERE clause string for connectors that support it
+        # (e.g., Neo4j get_all accepts where_clause and params)
+        where_clause = f"WHERE n.`{where_col}` = $filter_val"
+        params = {"filter_val": where_val}
+
+        logging.info(
+            f"Executing filtered get_all: table={table_name}, "
+            f"where={where_col}={where_val}"
+        )
+
+        # Try calling get_all with where_clause support
+        import inspect
+        sig = inspect.signature(conn.get_all)
+        if "where_clause" in sig.parameters:
+            result = await conn.get_all(
+                table_name, where_clause=where_clause, params=params
+            )
+        else:
+            # Fallback: get all and filter in Python
+            all_results = await conn.get_all(table_name)
+            if all_results:
+                # Use string comparison for cross-engine compatibility
+                # (Redis stores all values as strings)
+                result = [
+                    r for r in all_results
+                    if str(r.get(where_col, '')) == str(where_val)
+                ]
+            else:
+                result = []
+
+        return result if result else []
 
     async def _handle_select_all(self, conn, ast):
         """
