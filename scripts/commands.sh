@@ -19,6 +19,14 @@ docker-compose --profile postgres --profile redis up -d
 docker-compose --profile postgres --profile redis --profile neo4j up -d
 docker-compose --profile db up -d
 
+# ─── Sembrar datos (loaders) — ejecutar UNA vez por motor ───
+# Cada loader genera/lee los .tbl (dbgen) y carga la BD; termina al acabar.
+docker-compose --profile postgres-loader up      # Postgres
+docker-compose --profile redis-loader up         # Redis
+docker-compose --profile neo4j-loader up         # Neo4j
+docker-compose --profile mongo-loader up         # MongoDB  (siembra la BD 'tpch')
+docker-compose --profile cassandra-loader up     # Cassandra
+
 # Ver progreso de semillas
 sudo docker-compose logs -f redis-seed
 sudo docker-compose logs -f neo4j-seed
