@@ -39,10 +39,17 @@ class LiteralParser:
         if val_lower == "false":
             return False
 
-        # Handle Numerics
+        # Handle Numerics.
+        # Integers are returned as native `int` (Cassandra `int` columns and
+        # the Neo4j driver reject decimal.Decimal, and it keeps the stored type
+        # consistent with the bulk-loaded rows). Values with a decimal point
+        # keep `Decimal` for precision (e.g. Postgres `numeric` columns).
+        # This mirrors SelectStrategy._parse_pk_value_from_literal.
         try:
-            # Use Decimal for precision, consistent with other connector logic
-            return Decimal(val_str)
+            d = Decimal(val_str)
+            if "." not in val_str:
+                return int(d)
+            return d
         except InvalidOperation:
             # Fallback for any other unhandled literal (e.g., 'abc')
             msg = f"Could not parse literal '{val_str}' "
