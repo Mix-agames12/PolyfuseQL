@@ -125,8 +125,25 @@ class Neo4jConnector(Connector, SparkTranslator):
             rec = await result.single()
             return rec["p"] if rec and rec["p"] else {}
 
+    @staticmethod
+    def _convert_value_for_neo4j(value: Any) -> Any:
+        """
+        Converts a Python value into a type the Neo4j driver accepts.
+        The driver rejects decimal.Decimal, so cast to float; dates become
+        Neo4j Date. Mirrors _process_row_for_neo4j so rows written via
+        insert/update match the types stored by bulk_insert.
+        """
+        if isinstance(value, Decimal):
+            return float(value)
+        if isinstance(value, date):
+            return neo_time.Date.from_native(value)
+        return value
+
     async def insert(self, entity: str, payload: Dict[str, Any]) -> Any:
         driver = self._get_driver()
+        payload = {
+            k: self._convert_value_for_neo4j(v) for k, v in payload.items()
+        }
         props = ", ".join(f"`{k}`: ${k}" for k in payload.keys())
 
         cypher = f"CREATE (n:{entity.capitalize()} {{ {props} }}) "
@@ -140,6 +157,10 @@ class Neo4jConnector(Connector, SparkTranslator):
         self, entity: str, pk_col: str, pk_val: Any, payload: Dict[str, Any]
     ) -> int:
         driver = self._get_driver()
+        pk_val = self._convert_value_for_neo4j(pk_val)
+        payload = {
+            k: self._convert_value_for_neo4j(v) for k, v in payload.items()
+        }
         async with driver.session() as s:
             cypher = f"MATCH (n:{entity.capitalize()} "
             cypher += f"{{`{pk_col}`: $pk_val}}) "
