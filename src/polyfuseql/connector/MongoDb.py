@@ -204,6 +204,20 @@ class MongoDbConnector(Connector):
         # The translator returns a confirmation, not the full document
         return await self.query(sql)
 
+    @staticmethod
+    def _extract_count(result: Any, key: str) -> int:
+        """
+        Extracts an affected-row count from a translator response. The service
+        may return a dict ({'modified_count': 1}), a single-element list
+        wrapping that dict, or an empty value. Guards against AttributeError
+        when the response is a list (which previously broke UPDATE/DELETE).
+        """
+        if isinstance(result, dict):
+            return int(result.get(key, 0) or 0)
+        if isinstance(result, list) and result and isinstance(result[0], dict):
+            return int(result[0].get(key, 0) or 0)
+        return 0
+
     async def update(
         self, entity: str, pk_col: str, pk_val: Any, payload: Dict[str, Any]
     ) -> int:
@@ -215,7 +229,7 @@ class MongoDbConnector(Connector):
         sql = f"UPDATE {entity} SET {set_clause} WHERE {pk_col} = {pk_val_formatted}"  # noqa:E501
         result = await self.query(sql)
         # The translator returns a dict like {'modified_count': 1}
-        return result.get("modified_count", 0)
+        return self._extract_count(result, "modified_count")
 
     async def delete(self, entity: str, pk_col: str, pk_val: Any) -> int:
         """Deletes a document by building a DELETE FROM...WHERE SQL query."""
@@ -223,7 +237,7 @@ class MongoDbConnector(Connector):
         sql = f"DELETE FROM {entity} WHERE {pk_col} = {pk_val_formatted}"
         result = await self.query(sql)
         # The translator returns a dict like {'deleted_count': 1}
-        return result.get("deleted_count", 0)
+        return self._extract_count(result, "deleted_count")
 
     async def count(self, entity: str) -> int:
         """Counts documents by building a SELECT COUNT(*) SQL query."""
