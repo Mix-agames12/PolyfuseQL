@@ -5,7 +5,7 @@ from datetime import datetime
 
 # Configuration
 MONGO_HOST = os.getenv("MONGO_HOST", "mongodb")
-MONGO_PORT = int(os.getenv("MONGO_PORT", 27018))
+MONGO_PORT = int(os.getenv("MONGO_PORT", 27017))
 MONGO_USER = os.getenv("MONGO_INITDB_ROOT_USERNAME", "root")
 MONGO_PASS = os.getenv("MONGO_INITDB_ROOT_PASSWORD", "example")
 DB_NAME = os.getenv("MONGO_DB_NAME", "tpch")
