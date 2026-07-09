@@ -214,6 +214,8 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+      dbgen:
+        condition: service_completed_successfully
     networks:
       - polyfuse-net
 
