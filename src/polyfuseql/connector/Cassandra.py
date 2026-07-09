@@ -141,9 +141,16 @@ class CassandraConnector(Connector):
     async def insert(self, entity: str, payload: Dict[str, Any]) -> Any:
         """Inserts a new record."""
         session = self._get_session()
+        col_types = self._get_column_types(entity)
         cols = ", ".join(payload.keys())
         placeholders = ", ".join(["%s"] * len(payload))
-        values = list(payload.values())
+        # Cast each value to the type its column expects. Without this a numeric
+        # literal parsed as Decimal is rejected by an `int` column ("takes it as
+        # a float"). Mirrors the proven bulk_insert casting (_cast_row).
+        values = [
+            self._cast_value_for_column(v, col_types.get(k, "str"))
+            for k, v in payload.items()
+        ]
 
         cql = f"INSERT INTO {entity} ({cols}) VALUES ({placeholders})"
         await asyncio.to_thread(session.execute, cql, values)
@@ -156,9 +163,13 @@ class CassandraConnector(Connector):
         """Updates a record by primary key."""
         session = self._get_session()
         pk_val = self._cast_pk_value(pk_val)
+        col_types = self._get_column_types(entity)
 
         set_clause = ", ".join(f"{k} = %s" for k in payload.keys())
-        values = list(payload.values()) + [pk_val]
+        values = [
+            self._cast_value_for_column(v, col_types.get(k, "str"))
+            for k, v in payload.items()
+        ] + [pk_val]
 
         cql = f"UPDATE {entity} SET {set_clause} WHERE {pk_col} = %s"
         await asyncio.to_thread(session.execute, cql, values)
@@ -301,6 +312,30 @@ class CassandraConnector(Connector):
                 return int(pk_val)
             return float(pk_val)
         return pk_val
+
+    def _get_column_types(self, entity: str) -> Dict[str, str]:
+        """Returns the {column: type} map from the catalogue, or {} if absent."""
+        schema = self.catalogue.get_schema(entity)
+        return schema["columns"] if schema else {}
+
+    @staticmethod
+    def _cast_value_for_column(value: Any, col_type: str) -> Any:
+        """
+        Casts a single payload value to the Python type its column expects,
+        consistent with _cast_row used by bulk_insert.
+        """
+        if value is None:
+            return None
+        try:
+            if col_type == "int":
+                return int(value)
+            if col_type == "decimal":
+                return float(value)
+            if col_type == "date":
+                return str(value)
+        except (ValueError, TypeError):
+            return value
+        return value
 
     @staticmethod
     def _cast_row(
