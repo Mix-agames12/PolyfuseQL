@@ -30,7 +30,7 @@ uvicorn app.main:app --reload
 Tambien se pueden levantar usando docker segun lo definido en el archivo **docker-compose.yml**
 
 ```Shell
-git clone https://github.com/<TU-USUARIO>/polyfuseql.git 
+git clone https://github.com/<TU-USUARIO>/polyfuseql.git
 cd polyfuseql
 ```
 

@@ -56,24 +56,36 @@ async def get_mongodb_schema(
 ):
     """Introspect MongoDB: database → collections → fields."""
     try:
-        from polyfuseql.config import settings
-        from pymongo import MongoClient as SyncMongoClient
-        uri = (f"mongodb://{settings.mongodb.user}:{settings.mongodb.password}"
-               f"@{settings.mongodb.host}:{settings.mongodb.port}/?authSource=admin")
-        sync_client = SyncMongoClient(uri, serverSelectionTimeoutMS=5000)
-        db = sync_client[settings.mongodb.db]
+        user_id = _get_user_id(current_user)
+        client = connection_manager.get_client_for_user(user_id)
+        conn = await client.get_connector("mongodb")
+        db = conn._db
+        if db is None:
+            return {"engine": "mongodb", "database": "", "collections": []}
+
+        coll_names = await db.list_collection_names()
+        # Fallback to 'tpch' database if current db is empty but 'tpch' has collections
+        if not coll_names and db.name != "tpch":
+            client_mongo = conn._client
+            if client_mongo:
+                tpch_db = client_mongo["tpch"]
+                tpch_colls = await tpch_db.list_collection_names()
+                if tpch_colls:
+                    db = tpch_db
+                    coll_names = tpch_colls
+
         collections_info = []
-        for coll_name in db.list_collection_names():
+        for coll_name in coll_names:
             coll = db[coll_name]
-            sample = coll.find_one()
+            sample = await coll.find_one()
             fields = []
             if sample:
                 for key, val in sample.items():
                     fields.append({"field": key, "type": type(val).__name__})
+            count = await coll.estimated_document_count()
             collections_info.append({"name": coll_name, "fields": fields,
-                                     "count": coll.estimated_document_count()})
-        sync_client.close()
-        return {"engine": "mongodb", "database": settings.mongodb.db,
+                                     "count": count})
+        return {"engine": "mongodb", "database": db.name,
                 "collections": collections_info}
     except Exception as e:
         logger.error(f"Failed to get mongodb schema: {e}")
